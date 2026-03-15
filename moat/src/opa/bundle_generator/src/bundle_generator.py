@@ -28,6 +28,14 @@ class Bundle:
 
 
 class BundleGenerator:
+    TABLE_LIKE_RESOURCE_TYPES: set[str] = {
+        "table",
+        "view",
+        "materializedview",
+        "materialized_view",
+        "materialized view",
+    }
+
     DEFAULT_POLICY_DIRECTORY: str = "_defaults"
     REGO_FILE_PATTERN = re.compile(r"(?!.*_test\.rego$).*\.rego$")
     SUPPORTED_STATIC_DATA_EXTENSIONS: set[str] = {".json", ".yaml", ".yml"}
@@ -295,24 +303,40 @@ class BundleGenerator:
         # resources are ordered, so the first record will be a table, then columns for that table
         for resource in resources:
             # Split the fully qualified name to extract database, schema, and table
-            if resource.object_type == "table":
-                database, schema, table = resource.fq_name.split(".")
+            resource_type: str = (resource.object_type or "").lower()
+            if resource_type in BundleGenerator.TABLE_LIKE_RESOURCE_TYPES:
+                fq_name_parts: list[str] = resource.fq_name.split(".")
+                if len(fq_name_parts) < 3:
+                    logger.warning(
+                        "Skipping resource with invalid table-like fq_name: %s",
+                        resource.fq_name,
+                    )
+                    continue
+                database, schema, table = fq_name_parts[-3:]
                 data_objects[f"{database}.{schema}.{table}"] = {
                     "attributes": BundleGenerator._flatten_attributes(
                         resource.attributes
                     ),
                 }
 
-            if resource.object_type == "column":
+            if resource_type == "column":
                 fq_name_split: dict = re.search(
                     r"(?P<table_name>.+)\.(?P<column_name>[^.]+)$", resource.fq_name
                 ).groupdict()
                 column_name: str = fq_name_split.get("column_name", "")
                 table_name: str = fq_name_split.get("table_name", "")
-                if not data_objects.get(table_name).get("columns"):
-                    data_objects.get(table_name)["columns"] = {}
+                table_name_parts: list[str] = table_name.split(".")
+                table_key: str = (
+                    ".".join(table_name_parts[-3:])
+                    if len(table_name_parts) >= 3
+                    else table_name
+                )
+                if not data_objects.get(table_key):
+                    data_objects[table_key] = {"attributes": []}
+                if not data_objects[table_key].get("columns"):
+                    data_objects[table_key]["columns"] = {}
 
-                data_objects.get(table_name)["columns"][f"{column_name}"] = {
+                data_objects[table_key]["columns"][f"{column_name}"] = {
                     "attributes": BundleGenerator._flatten_attributes(
                         resource.attributes
                     ),
